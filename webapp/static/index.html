@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Bot WebApp</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #0088cc; }
+        button { background-color: #0088cc; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background-color: #005f8a; }
+        #userInfo { margin-top: 20px; padding: 10px; background-color: #e7f3ff; border-left: 4px solid #0088cc; }
+        #dataForm { margin-top: 20px; }
+        label { display: block; margin-bottom: 5px; }
+        input[type="text"], textarea { width: calc(100% - 22px); padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; }
+        #response { margin-top: 20px; padding: 10px; background-color: #eee; border: 1px solid #ccc; }
+    </style>
+    <!-- Telegram Web App script -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to Your Bot's WebApp!</h1>
+        <p>This is a sample web application that can interact with your Telegram bot.</p>
+
+        <div id="userInfo">
+            <p>Loading user information...</p>
+        </div>
+
+        <div id="dataForm">
+            <h2>Send Data to Bot</h2>
+            <label for="message">Message:</label>
+            <input type="text" id="message" name="message" placeholder="Enter a message">
+            <label for="details">Details:</label>
+            <textarea id="details" name="details" rows="3" placeholder="Enter some details"></textarea>
+            <button onclick="sendDataToBot()">Send Data</button>
+        </div>
+        
+        <div id="response">
+            <p>Response from server will appear here.</p>
+        </div>
+
+        <button onclick="Telegram.WebApp.close()">Close WebApp</button>
+    </div>
+
+    <script>
+        // Initialize the Telegram WebApp
+        Telegram.WebApp.ready();
+
+        // Display user info
+        const userInfoDiv = document.getElementById('userInfo');
+        if (Telegram.WebApp.initDataUnsafe && Telegram.WebApp.initDataUnsafe.user) {
+            const user = Telegram.WebApp.initDataUnsafe.user;
+            userInfoDiv.innerHTML = `
+                <p><strong>User ID:</strong> ${user.id}</p>
+                <p><strong>Name:</strong> ${user.first_name} ${user.last_name || ''}</p>
+                <p><strong>Username:</strong> @${user.username || 'N/A'}</p>
+                <p><strong>Language Code:</strong> ${user.language_code || 'N/A'}</p>
+            `;
+            // Expand the WebApp to full height
+            Telegram.WebApp.expand();
+        } else {
+            userInfoDiv.innerHTML = "<p>User information not available. Are you running this inside Telegram?</p>";
+            // For testing in browser:
+            // Telegram.WebApp.MainButton.setText("Close").show().onClick(function(){ Telegram.WebApp.close(); });
+        }
+
+        // Function to send data to your FastAPI backend
+        async function sendDataToBot() {
+            const message = document.getElementById('message').value;
+            const details = document.getElementById('details').value;
+            const responseDiv = document.getElementById('response');
+
+            const dataToSend = {
+                message: message,
+                details: details,
+                user: Telegram.WebApp.initDataUnsafe ? Telegram.WebApp.initDataUnsafe.user : null,
+                // query_id is important if you need to send an answer to the Web App query via bot API
+                query_id: Telegram.WebApp.initDataUnsafe ? Telegram.WebApp.initDataUnsafe.query_id : null 
+            };
+            
+            responseDiv.innerHTML = "<p>Sending data...</p>";
+
+            try {
+                // Replace with your actual backend API endpoint if different
+                const response = await fetch('/api/submitdata', { 
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(dataToSend),
+                });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    responseDiv.innerHTML = `<p><strong>Server Response:</strong> ${result.status}</p><pre>${JSON.stringify(result.received_data, null, 2)}</pre>`;
+                    // Optionally, you can close the WebApp or show a success message via MainButton
+                    Telegram.WebApp.MainButton.setText('Data Sent!').show();
+                } else {
+                    responseDiv.innerHTML = `<p><strong>Error:</strong> ${result.message || 'Failed to send data'}</p>`;
+                }
+            } catch (error) {
+                console.error('Error sending data:', error);
+                responseDiv.innerHTML = `<p><strong>Network Error:</strong> Could not connect to the server. ${error.message}</p>`;
+            }
+        }
+
+        // Configure the Main Button (optional)
+        // Telegram.WebApp.MainButton.setText("SUBMIT").show().onClick(sendDataToBot);
+
+        // Request theme parameters (optional)
+        // Telegram.WebApp.onEvent('themeChanged', function() {
+        //    document.body.style.color = Telegram.WebApp.themeParams.text_color;
+        //    document.body.style.backgroundColor = Telegram.WebApp.themeParams.bg_color;
+        // });
+
+    </script>
+</body>
+</html>

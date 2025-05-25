@@ -1,0 +1,7 @@
+python-telegram-bot[ext]>=20.7  # یا آخرین نسخه پایدار
+SQLAlchemy[asyncio]>=2.0
+aiosqlite>=0.19 # برای SQLite
+asyncpg>=0.28 # برای PostgreSQL (در صورت استفاده)
+python-dotenv>=1.0
+redis>=5.0 # (اختیاری، برای سیستم ضد سیلاب پیشرفته‌تر)
+# alembic>=1.12 # (اختیاری، برای مدیریت مهاجرت‌های پایگاه داده)
