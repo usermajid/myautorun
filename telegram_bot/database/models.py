@@ -11,12 +11,15 @@ class GroupSetting(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     group_id = Column(BigInteger, unique=True, index=True, nullable=False)
+    chat_title = Column(String, nullable=True) # Added chat_title
     is_bot_active = Column(Boolean, default=True)
     welcome_message = Column(String, default="Welcome to the group, {user_mention}!")
+    welcome_message_active = Column(Boolean, default=False) # New
     farewell_message = Column(String, default="Goodbye, {user_name}!")
-    allow_links = Column(Boolean, default=True)
-    allow_forwards = Column(Boolean, default=True)
-    flood_control_enabled = Column(Boolean, default=True)
+    farewell_message_active = Column(Boolean, default=False) # New
+    filter_links_active = Column(Boolean, default=False) # Renamed from allow_links, default inverted
+    filter_forwards_active = Column(Boolean, default=False) # Renamed from allow_forwards, default inverted
+    anti_flood_active = Column(Boolean, default=True) # Renamed from flood_control_enabled
     max_messages_per_minute = Column(Integer, default=10) # Example value
     warn_on_infraction = Column(Boolean, default=True)
     kick_on_infraction = Column(Boolean, default=False) # Kicks after N infractions

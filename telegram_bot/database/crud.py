@@ -1,129 +1,163 @@
 import logging
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select # For SQLAlchemy 2.0 style select
 from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Optional
-from telegram_bot.database import models
-from telegram_bot.database.models import GroupSetting, ForbiddenWord, UserFloodRecord # Ensure direct import for clarity
+from typing import List, Optional, TypeVar, Type
+from telegram_bot.database import models # Assuming models.py defines GroupSetting, ForbiddenWord, UserFloodRecord
+from telegram_bot.database.models import GroupSetting, ForbiddenWord, UserFloodRecord # Explicit imports
 
 logger = logging.getLogger(__name__)
 
-# General CRUD operations
-def get_or_create_group_setting(db: Session, group_id: int) -> Optional[models.GroupSetting]:
-    """Fetches a group setting or creates it if it doesn't exist."""
+# Generic type for models, if needed for more abstract CRUD, but for now specific is fine.
+# M = TypeVar('M', bound=models.Base) 
+
+async def get_or_create_group_setting(session: AsyncSession, group_id: int, chat_title: Optional[str] = None) -> Optional[models.GroupSetting]:
+    """Fetches a group setting or creates it if it doesn't exist (async)."""
     try:
-        setting = db.query(models.GroupSetting).filter(models.GroupSetting.group_id == group_id).first()
+        stmt = select(models.GroupSetting).where(models.GroupSetting.group_id == group_id)
+        result = await session.execute(stmt)
+        setting = result.scalar_one_or_none()
+
         if not setting:
             logger.info(f"No settings found for group {group_id}, creating new entry.")
-            setting = models.GroupSetting(group_id=group_id)
-            db.add(setting)
-            db.commit()
-            db.refresh(setting)
+            # Use defaults from the model itself if defined there
+            setting = models.GroupSetting(group_id=group_id, chat_title=chat_title) # Pass chat_title if provided
+            session.add(setting)
+            await session.commit()
+            await session.refresh(setting)
             logger.info(f"Successfully created settings for group {group_id}.")
+        elif chat_title and setting.chat_title != chat_title: # Update chat_title if it changed
+            setting.chat_title = chat_title
+            await session.commit()
+            await session.refresh(setting)
+            logger.info(f"Updated chat_title for group {group_id} to {chat_title}.")
+            
         return setting
     except SQLAlchemyError as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Database error in get_or_create_group_setting for group {group_id}: {e}", exc_info=True)
         return None
-    except Exception as e:
-        db.rollback()
+    except Exception as e: # Catch other unexpected errors
+        await session.rollback()
         logger.error(f"Unexpected error in get_or_create_group_setting for group {group_id}: {e}", exc_info=True)
         return None
 
-def update_group_setting(db: Session, group_id: int, **kwargs) -> Optional[models.GroupSetting]:
-    """Updates specific fields of a group setting."""
+async def update_group_setting(session: AsyncSession, group_id: int, **kwargs) -> Optional[models.GroupSetting]:
+    """Updates specific fields of a group setting (async)."""
     try:
-        setting = get_or_create_group_setting(db, group_id)
+        # In async, it's often better to fetch then update, or use ORM update correctly.
+        # For simplicity, fetching first. A more direct update might be possible with SQLAlchemy 2.0 features.
+        stmt = select(models.GroupSetting).where(models.GroupSetting.group_id == group_id)
+        result = await session.execute(stmt)
+        setting = result.scalar_one_or_none()
+
         if setting:
             for key, value in kwargs.items():
                 if hasattr(setting, key):
                     setattr(setting, key, value)
                 else:
                     logger.warning(f"Attempted to update non-existent attribute '{key}' for group {group_id}.")
-            db.commit()
-            db.refresh(setting)
-            logger.info(f"Successfully updated settings for group {group_id}.")
+            await session.commit()
+            await session.refresh(setting)
+            logger.info(f"Successfully updated settings for group {group_id} with {kwargs}.")
+        else:
+            logger.warning(f"Settings not found for group {group_id} during update attempt.")
         return setting
     except SQLAlchemyError as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Database error in update_group_setting for group {group_id}: {e}", exc_info=True)
         return None
     except Exception as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Unexpected error in update_group_setting for group {group_id}: {e}", exc_info=True)
         return None
 
-
-# Forbidden Words CRUD
-def add_forbidden_word(db: Session, group_id: int, word: str) -> Optional[models.ForbiddenWord]:
-    """Adds a forbidden word for a specific group."""
+# Forbidden Words CRUD (async)
+async def add_forbidden_word(session: AsyncSession, group_id: int, word: str) -> Optional[models.ForbiddenWord]:
+    """Adds a forbidden word for a specific group (async)."""
     try:
-        group_setting = get_or_create_group_setting(db, group_id)
-        if not group_setting:
-            logger.error(f"Could not add forbidden word. Group setting not found for group {group_id}.")
+        # First, get the group_setting object (specifically its ID)
+        group_setting = await get_or_create_group_setting(session, group_id)
+        if not group_setting or not group_setting.id: # Ensure group_setting and its ID exist
+            logger.error(f"Could not add forbidden word. Group setting not found or ID missing for group {group_id}.")
             return None
 
-        existing_word = db.query(models.ForbiddenWord).filter_by(group_setting_id=group_setting.id, word=word.lower()).first()
+        word_lower = word.strip().lower()
+        if not word_lower:
+            logger.warning(f"Attempt to add empty forbidden word for group {group_id}")
+            return None
+
+        stmt = select(models.ForbiddenWord).where(
+            models.ForbiddenWord.group_setting_id == group_setting.id,
+            models.ForbiddenWord.word == word_lower
+        )
+        result = await session.execute(stmt)
+        existing_word = result.scalar_one_or_none()
+
         if existing_word:
-            logger.info(f"Word '{word}' already forbidden in group {group_id}.")
+            logger.info(f"Word '{word_lower}' already forbidden in group {group_id}.")
             return existing_word
 
-        forbidden_word = models.ForbiddenWord(group_setting_id=group_setting.id, word=word.lower())
-        db.add(forbidden_word)
-        db.commit()
-        db.refresh(forbidden_word)
-        logger.info(f"Added forbidden word '{word}' to group {group_id}.")
+        forbidden_word = models.ForbiddenWord(group_setting_id=group_setting.id, word=word_lower)
+        session.add(forbidden_word)
+        await session.commit()
+        await session.refresh(forbidden_word)
+        logger.info(f"Added forbidden word '{word_lower}' to group {group_id}.")
         return forbidden_word
     except SQLAlchemyError as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Database error adding forbidden word '{word}' to group {group_id}: {e}", exc_info=True)
         return None
     except Exception as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Unexpected error adding forbidden word '{word}' to group {group_id}: {e}", exc_info=True)
         return None
 
-def remove_forbidden_word(db: Session, group_id: int, word: str) -> bool:
-    """Removes a forbidden word for a specific group."""
+async def remove_forbidden_word(session: AsyncSession, group_id: int, word: str) -> bool:
+    """Removes a forbidden word for a specific group (async)."""
     try:
-        group_setting = get_or_create_group_setting(db, group_id)
-        if not group_setting:
-            logger.error(f"Could not remove forbidden word. Group setting not found for group {group_id}.")
+        group_setting = await get_or_create_group_setting(session, group_id)
+        if not group_setting or not group_setting.id:
+            logger.error(f"Could not remove forbidden word. Group setting not found or ID missing for group {group_id}.")
             return False
 
-        forbidden_word_obj = db.query(models.ForbiddenWord).filter_by(group_setting_id=group_setting.id, word=word.lower()).first()
+        word_lower = word.strip().lower()
+        stmt = select(models.ForbiddenWord).where(
+            models.ForbiddenWord.group_setting_id == group_setting.id,
+            models.ForbiddenWord.word == word_lower
+        )
+        result = await session.execute(stmt)
+        forbidden_word_obj = result.scalar_one_or_none()
+
         if forbidden_word_obj:
-            db.delete(forbidden_word_obj)
-            db.commit()
-            logger.info(f"Removed forbidden word '{word}' from group {group_id}.")
+            await session.delete(forbidden_word_obj)
+            await session.commit()
+            logger.info(f"Removed forbidden word '{word_lower}' from group {group_id}.")
             return True
-        logger.info(f"Forbidden word '{word}' not found in group {group_id} for removal.")
+        logger.info(f"Forbidden word '{word_lower}' not found in group {group_id} for removal.")
         return False
     except SQLAlchemyError as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Database error removing forbidden word '{word}' from group {group_id}: {e}", exc_info=True)
         return False
     except Exception as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Unexpected error removing forbidden word '{word}' from group {group_id}: {e}", exc_info=True)
         return False
 
-def get_forbidden_words(db: Session, group_id: int) -> List[str]:
-    """Retrieves all forbidden words for a specific group."""
+async def get_forbidden_words(session: AsyncSession, group_id: int) -> List[str]:
+    """Retrieves all forbidden words for a specific group (async)."""
     try:
-        group_setting = get_or_create_group_setting(db, group_id)
-        if not group_setting:
-            logger.error(f"Could not retrieve forbidden words. Group setting not found for group {group_id}.")
+        group_setting = await get_or_create_group_setting(session, group_id)
+        if not group_setting or not group_setting.id:
+            logger.error(f"Could not retrieve forbidden words. Group setting not found or ID missing for group {group_id}.")
             return []
-        # Ensure that the relationship loads the words correctly.
-        # words = [fw.word for fw in group_setting.forbidden_words]
-        # logger.debug(f"Retrieved {len(words)} forbidden words for group {group_id}.")
-        # return words
-        # Corrected way to query related objects if the above is not efficient or direct enough:
-        words_query = db.query(models.ForbiddenWord.word).filter(models.ForbiddenWord.group_setting_id == group_setting.id).all()
-        words = [word_tuple[0] for word_tuple in words_query]
-        logger.debug(f"Retrieved {len(words)} forbidden words for group {group_id}: {words}")
-        return words
 
+        stmt = select(models.ForbiddenWord.word).where(models.ForbiddenWord.group_setting_id == group_setting.id)
+        result = await session.execute(stmt)
+        words = [row[0] for row in result.fetchall()]
+        logger.debug(f"Retrieved {len(words)} forbidden words for group {group_id}.")
+        return words
     except SQLAlchemyError as e:
         logger.error(f"Database error retrieving forbidden words for group {group_id}: {e}", exc_info=True)
         return []
@@ -131,44 +165,47 @@ def get_forbidden_words(db: Session, group_id: int) -> List[str]:
         logger.error(f"Unexpected error retrieving forbidden words for group {group_id}: {e}", exc_info=True)
         return []
 
-
-# Flood Control CRUD
-def get_or_create_user_flood_record(db: Session, group_id: int, user_id: int) -> Optional[UserFloodRecord]:
-    """Fetches or creates a flood record for a user in a group."""
+# Flood Control CRUD (async) - Assuming UserFloodRecord model fields are: id, user_id, group_id, message_timestamps (DateTime), infraction_count
+async def get_or_create_user_flood_record(session: AsyncSession, group_id: int, user_id: int) -> Optional[models.UserFloodRecord]:
+    """Fetches or creates a flood record for a user in a group (async)."""
     try:
-        record = db.query(UserFloodRecord).filter_by(group_id=group_id, user_id=user_id).first()
+        stmt = select(models.UserFloodRecord).where(
+            models.UserFloodRecord.group_id == group_id,
+            models.UserFloodRecord.user_id == user_id
+        )
+        result = await session.execute(stmt)
+        record = result.scalar_one_or_none()
+
         if not record:
-            record = UserFloodRecord(group_id=group_id, user_id=user_id, infraction_count=0)
-            db.add(record)
-            db.commit()
-            db.refresh(record)
-            logger.info(f"Created new flood record for user {user_id} in group {group_id}.")
+            logger.info(f"Creating new flood record for user {user_id} in group {group_id}.")
+            # Default infraction_count is handled by model if defined there.
+            record = models.UserFloodRecord(group_id=group_id, user_id=user_id, infraction_count=0)
+            # message_timestamps will also use its default (e.g., func.now()) if not set here
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
         return record
     except SQLAlchemyError as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"DB error in get_or_create_user_flood_record for user {user_id}, group {group_id}: {e}", exc_info=True)
         return None
     except Exception as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Unexpected error in get_or_create_user_flood_record for user {user_id}, group {group_id}: {e}", exc_info=True)
         return None
 
-
-def update_user_flood_record(db: Session, group_id: int, user_id: int, new_timestamp: Optional[bool] = False, increment_infraction: Optional[bool] = False) -> Optional[UserFloodRecord]:
+async def update_user_flood_record(session: AsyncSession, group_id: int, user_id: int, update_timestamp: bool = False, increment_infraction: bool = False) -> Optional[models.UserFloodRecord]:
     """
-    Updates a user's flood record. Can add a new message timestamp or increment infraction count.
-    Note: The original model stores a single `message_timestamps: DateTime`.
-    This implies we are tracking the *last* message time or the *start* of a flood period,
-    not a list of all messages. If a list is needed, the model needs to change.
-    For simplicity, let's assume `message_timestamps` is updated to the latest message time
-    when `new_timestamp` is True.
+    Updates a user's flood record (async).
+    - `update_timestamp`: If True, updates `message_timestamps` to current time.
+    - `increment_infraction`: If True, increments `infraction_count`.
     """
     try:
-        record = get_or_create_user_flood_record(db, group_id, user_id)
+        record = await get_or_create_user_flood_record(session, group_id, user_id)
         if not record:
-            return None # Error already logged by get_or_create
+            return None # Error already logged
 
-        if new_timestamp:
+        if update_timestamp:
             from sqlalchemy.sql import func
             record.message_timestamps = func.now() # Update to current time
             logger.debug(f"Updated message timestamp for user {user_id} in group {group_id}.")
@@ -177,80 +214,37 @@ def update_user_flood_record(db: Session, group_id: int, user_id: int, new_times
             record.infraction_count = (record.infraction_count or 0) + 1
             logger.info(f"Incremented infraction count for user {user_id} in group {group_id} to {record.infraction_count}.")
 
-        db.commit()
-        db.refresh(record)
+        await session.commit()
+        await session.refresh(record)
         return record
     except SQLAlchemyError as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"DB error updating flood record for user {user_id}, group {group_id}: {e}", exc_info=True)
         return None
     except Exception as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Unexpected error updating flood record for user {user_id}, group {group_id}: {e}", exc_info=True)
         return None
 
-
-def reset_user_infraction_count(db: Session, group_id: int, user_id: int) -> Optional[UserFloodRecord]:
-    """Resets a user's infraction count in a group."""
+async def reset_user_infraction_count(session: AsyncSession, group_id: int, user_id: int) -> Optional[models.UserFloodRecord]:
+    """Resets a user's infraction count in a group (async)."""
     try:
-        record = get_or_create_user_flood_record(db, group_id, user_id)
+        record = await get_or_create_user_flood_record(session, group_id, user_id)
         if record:
             record.infraction_count = 0
-            db.commit()
-            db.refresh(record)
+            await session.commit()
+            await session.refresh(record)
             logger.info(f"Reset infraction count for user {user_id} in group {group_id}.")
         return record
     except SQLAlchemyError as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"DB error resetting infractions for user {user_id}, group {group_id}: {e}", exc_info=True)
         return None
     except Exception as e:
-        db.rollback()
+        await session.rollback()
         logger.error(f"Unexpected error resetting infractions for user {user_id}, group {group_id}: {e}", exc_info=True)
         return None
 
-
-if __name__ == "__main__":
-    # This is for basic testing or direct script execution setup.
-    # In a real application, you'd typically call these functions from your bot handlers.
-    from telegram_bot.database.engine import SessionLocal, init_db
-    from telegram_bot.core.logging_config import setup_logging
-    setup_logging() # Configure logging
-
-    logger.info("Running CRUD operations test script...")
-    init_db() # Ensure tables are created
-
-    db_session = SessionLocal()
-
-    # Example: Test GroupSetting
-    test_group_id = 12345
-    settings = get_or_create_group_setting(db_session, test_group_id)
-    if settings:
-        logger.info(f"Settings for group {test_group_id}: {settings}")
-        update_group_setting(db_session, test_group_id, welcome_message="Hello there!", allow_links=False)
-        updated_settings = get_or_create_group_setting(db_session, test_group_id)
-        logger.info(f"Updated settings for group {test_group_id}: {updated_settings}")
-
-    # Example: Test ForbiddenWord
-    add_forbidden_word(db_session, test_group_id, "spam")
-    add_forbidden_word(db_session, test_group_id, "phish")
-    words = get_forbidden_words(db_session, test_group_id)
-    logger.info(f"Forbidden words for group {test_group_id}: {words}")
-    remove_forbidden_word(db_session, test_group_id, "spam")
-    words_after_removal = get_forbidden_words(db_session, test_group_id)
-    logger.info(f"Forbidden words after removal for group {test_group_id}: {words_after_removal}")
-
-    # Example: Test UserFloodRecord
-    test_user_id = 67890
-    flood_record = get_or_create_user_flood_record(db_session, test_group_id, test_user_id)
-    if flood_record:
-        logger.info(f"Flood record for user {test_user_id} in group {test_group_id}: {flood_record}")
-        update_user_flood_record(db_session, test_group_id, test_user_id, new_timestamp=True, increment_infraction=True)
-        updated_flood_record = get_or_create_user_flood_record(db_session, test_group_id, test_user_id)
-        logger.info(f"Updated flood record: {updated_flood_record}")
-        reset_user_infraction_count(db_session, test_group_id, test_user_id)
-        reset_flood_record = get_or_create_user_flood_record(db_session, test_group_id, test_user_id)
-        logger.info(f"Reset flood record: {reset_flood_record}")
-
-    db_session.close()
-    logger.info("CRUD operations test script finished.")
+# Note: The __main__ block from the synchronous crud.py is removed as it's not directly translatable
+# to async without an async event loop runner. Testing for async CRUD would be done differently,
+# likely with pytest-asyncio.
