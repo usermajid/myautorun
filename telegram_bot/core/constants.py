@@ -28,7 +28,15 @@ class BotMessages:
     RULES_PROMPT: str = "لطفاً متن قوانین جدید گروه را ارسال کنید."
     MAX_MESSAGES_PROMPT: str = "لطفاً حداکثر تعداد پیام مجاز در بازه زمانی ضد سیلاب (مثلاً برای ۱۰ ثانیه) را به صورت عددی وارد کنید."
     PERMISSION_DENIED: str = "شما مجوز لازم برای انجام این کار را ندارید."
-    BOT_NOT_ADMIN_ENOUGH: str = (
+    BOT_NOT_ADMIN_ENOUGH: str = ( # Generic message, specific ones below might be better
         "متاسفانه من مجوزهای لازم برای انجام این کار را در گروه ندارم. "
-        "لطفاً بررسی کنید که من مدیر گروه هستم و مجوزهای 'حذف پیام‌ها' و 'محدود کردن کاربران' را دارم."
+        "لطفاً بررسی کنید که من مدیر گروه هستم و مجوزهای لازم را دارم."
     )
+    # New messages for services:
+    FLOOD_WARNING_MESSAGE: str = "{user_mention}, شما در حال ارسال پیام با سرعت بیش از حد هستید! لطفاً کمی آهسته‌تر."
+    BOT_NOT_ADMIN_ENOUGH_BAN: str = "ربات برای مسدود کردن کاربر نیاز به دسترسی مدیریت با قابلیت مسدود کردن کاربران دارد."
+    BOT_NOT_ADMIN_ENOUGH_KICK: str = "ربات برای اخراج کاربر نیاز به دسترسی مدیریت با قابلیت مسدود کردن کاربران دارد." # Kicking also uses ban permission
+    LINK_FILTER_WARNING: str = "ارسال لینک در این گروه مجاز نیست. پیام شما حذف شد."
+    FORWARD_FILTER_WARNING: str = "فوروارد کردن پیام در این گروه مجاز نیست. پیام شما حذف شد."
+    FORBIDDEN_WORD_WARNING: str = "پیام شما حاوی کلمه ممنوعه '{word}' است و حذف شد."
+    BOT_NEEDS_DELETE_PERMISSION: str = "ربات برای حذف این پیام نیاز به دسترسی 'حذف پیام‌ها' دارد."

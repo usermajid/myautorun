@@ -19,6 +19,7 @@ class GroupSetting(Base):
     farewell_message_active = Column(Boolean, default=False) # New
     filter_links_active = Column(Boolean, default=False) # Renamed from allow_links, default inverted
     filter_forwards_active = Column(Boolean, default=False) # Renamed from allow_forwards, default inverted
+    filter_forbidden_words_active = Column(Boolean, default=False) # New field
     anti_flood_active = Column(Boolean, default=True) # Renamed from flood_control_enabled
     max_messages_per_minute = Column(Integer, default=10) # Example value
     warn_on_infraction = Column(Boolean, default=True)
