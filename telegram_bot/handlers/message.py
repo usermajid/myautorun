@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram_bot.database.engine import AsyncSessionFactory
 from telegram_bot.database.crud import GroupSettingCRUD, ForbiddenWordCRUD
-from telegram_bot.services.permissions import PermissionService
+from telegram_bot.services.permissions import is_user_admin_or_owner, PermissionService # Updated import
 from telegram_bot.services.message_filter import MessageFilterService
 from telegram_bot.services.flood_control import FloodControlService
 from telegram_bot.utils.helpers import GeneralHelpers
@@ -66,7 +66,7 @@ class MessageHandlers:
             return
 
         # Ignore messages from admins for filtering and flood control
-        if await PermissionService.is_user_admin_or_owner(update, context):
+        if await is_user_admin_or_owner(update, context): # Updated call
             return
 
         # 1. Flood Control
@@ -93,3 +93,35 @@ class MessageHandlers:
             # Check for forwards
             if await filter_service.filter_forwards(group_settings):
                 return # Message deleted
+
+    @staticmethod
+    async def handle_left_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message or not update.message.left_chat_member or not update.effective_chat:
+            logger.debug("Left member handler: No left member or effective_chat.")
+            return
+
+        member = update.message.left_chat_member
+        chat = update.effective_chat
+        
+        # Optional: Don't send farewell message for bots
+        if member.is_bot:
+            logger.info(f"Bot {member.username or member.id} left chat {chat.id}. Skipping farewell message.")
+            return
+
+        async with AsyncSessionFactory() as session:
+            group_settings = await GroupSettingCRUD.get_or_create(session, chat.id, chat.title)
+        
+        if group_settings and group_settings.farewell_message_active and group_settings.farewell_message:
+            user_mention_html = GeneralHelpers.create_user_mention_html(member.id, member)
+            chat_title_html = html.escape(chat.title or "گروه")
+
+            farewell_msg = GeneralHelpers.format_welcome_message( # Reusing format_welcome_message for placeholders
+                group_settings.farewell_message,
+                user_mention_html,
+                chat_title_html
+            )
+            try:
+                await context.bot.send_message(chat_id=chat.id, text=farewell_msg, parse_mode='HTML')
+                logger.info(f"Sent farewell message for member {member.id} in chat {chat.id}")
+            except Exception as e:
+                logger.error(f"Error sending farewell message for {member.id}: {e}", exc_info=True)

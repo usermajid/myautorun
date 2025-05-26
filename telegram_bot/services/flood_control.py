@@ -3,23 +3,26 @@ import time
 from collections import defaultdict
 from typing import Dict, List, Optional
 
-from telegram import Update, ChatPermissions # Added ChatPermissions import
+from telegram import Update, ChatPermissions # Keep ChatPermissions for potential future use with restrict_chat_member
 from telegram.ext import ContextTypes
-from telegram_bot.database import crud
-from telegram_bot.database.engine import get_db
-from telegram_bot.database.models import GroupSetting, UserFloodRecord
+from telegram_bot.database.engine import AsyncSessionFactory # Import AsyncSessionFactory
+from telegram_bot.database import crud # Ensure this refers to the async CRUD module
+from telegram_bot.database.models import GroupSetting, UserFloodRecord # Assuming these are still relevant
+from telegram_bot.utils.helpers import GeneralHelpers # For user mentions, if needed
+from telegram_bot.core.constants import BotConstants, BotMessages # For default messages/settings
 
 logger = logging.getLogger(__name__)
 
-# This in-memory store is a simple cache. For distributed bots, a more robust solution (e.g., Redis) would be needed.
-# Maps: group_id -> user_id -> list of message timestamps
+# NB: USER_MESSAGE_TIMESTAMPS is an in-memory store and will not scale across multiple instances
+# or persist across restarts. UserFloodRecord.message_timestamps in the DB is not currently used for this time-window check.
+# For a scalable solution, a distributed cache like Redis would be more appropriate for tracking message rates.
 USER_MESSAGE_TIMESTAMPS: Dict[int, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
 
 class FloodControlService:
     def __init__(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self.update = update
         self.context = context
-        self.db_session = next(get_db()) # Obtain a DB session
+        # self.db_session removed
 
     async def check_and_handle_flood(self) -> bool:
         """Checks for flooding and takes action if necessary. Returns True if flood was detected and handled."""
@@ -31,114 +34,94 @@ class FloodControlService:
         user_id = self.update.message.from_user.id
         current_time = time.time()
 
-        settings: Optional[GroupSetting] = crud.get_or_create_group_setting(self.db_session, group_id)
-        if not settings or not settings.flood_control_enabled:
-            logger.debug(f"Flood control disabled or no settings for group {group_id}.")
-            self.db_session.close()
-            return False
+        async with AsyncSessionFactory() as session: # Acquire async session
+            settings: Optional[GroupSetting] = await crud.GroupSettingCRUD.get_or_create(session, group_id, self.update.effective_chat.title)
+            if not settings or not settings.anti_flood_active: # Use corrected field name
+                logger.debug(f"Flood control disabled or no settings for group {group_id}.")
+                return False
 
-        # Clean up old timestamps (older than 1 minute, for example)
-        # This simple cleanup might not be efficient for very active groups.
-        # A more sophisticated approach might involve periodic cleanup tasks.
-        # Also, the flood window (e.g. 60 seconds) should ideally be configurable.
-        timestamps = USER_MESSAGE_TIMESTAMPS[group_id][user_id]
-        valid_timestamps = [t for t in timestamps if current_time - t < 60] # Keep messages from last 60s
-        USER_MESSAGE_TIMESTAMPS[group_id][user_id] = valid_timestamps
-        valid_timestamps.append(current_time)
+            # In-memory message rate tracking (remains for now as per instructions)
+            timestamps = USER_MESSAGE_TIMESTAMPS[group_id][user_id]
+            # Use BotConstants for flood window or make it configurable in GroupSetting
+            flood_window_seconds = BotConstants.FLOOD_TIME_WINDOW_SECONDS 
+            valid_timestamps = [t for t in timestamps if current_time - t < flood_window_seconds]
+            USER_MESSAGE_TIMESTAMPS[group_id][user_id] = valid_timestamps
+            valid_timestamps.append(current_time)
 
-        logger.debug(f"User {user_id} in group {group_id} has {len(valid_timestamps)} messages in the last minute. Max allowed: {settings.max_messages_per_minute}")
+            logger.debug(f"User {user_id} in group {group_id} has {len(valid_timestamps)} messages in the last {flood_window_seconds}s. Max allowed: {settings.max_messages_per_minute}")
 
-        if len(valid_timestamps) > settings.max_messages_per_minute:
-            logger.info(f"Flood detected for user {user_id} in group {group_id}.")
-            user_flood_record: Optional[UserFloodRecord] = crud.update_user_flood_record(
-                self.db_session, group_id, user_id, increment_infraction=True
-            )
-
-            if user_flood_record and settings.warn_on_infraction:
-                try:
-                    await self.update.message.reply_text(
-                        f"{self.update.message.from_user.mention_markdown_v2()}, you're sending messages too fast! Please slow down."
-                    )
-                except Exception as e:
-                    logger.error(f"Error sending flood warning message: {e}", exc_info=True)
-
-
-            if user_flood_record and user_flood_record.infraction_count >= settings.infraction_count_for_action:
-                action_taken = False
-                if settings.kick_on_infraction and not action_taken: # Prioritize ban if both are true
-                    try:
-                        await self.context.bot.kick_chat_member(chat_id=group_id, user_id=user_id)
-                        logger.info(f"Kicked user {user_id} from group {group_id} due to flooding.")
-                        # Optionally, unban after a short period if it's a kick, not a ban.
-                        # This requires more complex logic, e.g., using context.job_queue.
-                        action_taken = True
-                    except Exception as e:
-                        logger.error(f"Error kicking user {user_id} for flooding: {e}", exc_info=True)
-
-                if settings.ban_on_infraction: # This implies a permanent ban as per typical Telegram bot actions
-                    try:
-                        await self.context.bot.ban_chat_member(chat_id=group_id, user_id=user_id)
-                        logger.info(f"Banned user {user_id} from group {group_id} due to flooding.")
-                        action_taken = True
-                    except Exception as e:
-                        logger.error(f"Error banning user {user_id} for flooding: {e}", exc_info=True)
+            if len(valid_timestamps) > settings.max_messages_per_minute:
+                logger.info(f"Flood detected for user {user_id} in group {group_id}.")
                 
-                if action_taken:
-                     # Reset infractions after action is taken
-                    crud.reset_user_infraction_count(self.db_session, group_id, user_id)
+                # Update user's flood record in the database, including timestamp of this flood detection
+                user_flood_record: Optional[UserFloodRecord] = await crud.UserFloodRecordCRUD.update(
+                    session, group_id, user_id, update_timestamp=True, increment_infraction=True
+                )
+
+                warn_message = BotMessages.FLOOD_WARNING_MESSAGE.format(
+                    user_mention=GeneralHelpers.create_user_mention_html(user_id, self.update.message.from_user)
+                )
+
+                if user_flood_record and settings.warn_on_infraction:
+                    try:
+                        await self.update.message.reply_html(warn_message)
+                    except Exception as e:
+                        logger.error(f"Error sending flood warning message: {e}", exc_info=True)
+
+                if user_flood_record and user_flood_record.infraction_count >= settings.infraction_count_for_action:
+                    action_taken = False
+                    action_log_message = ""
+
+                    # Determine action based on settings (ban highest priority, then kick)
+                    # This logic can be expanded (e.g., temporary mute first)
+                    if settings.ban_on_infraction:
+                        try:
+                            await self.context.bot.ban_chat_member(chat_id=group_id, user_id=user_id)
+                            action_log_message = f"Banned user {user_id} from group {group_id} due to flooding."
+                            action_taken = True
+                        except Exception as e:
+                            logger.error(f"Error banning user {user_id} for flooding: {e}", exc_info=True)
+                            await self.update.message.reply_text(BotMessages.BOT_NOT_ADMIN_ENOUGH_BAN)
 
 
-            # Temporary restriction as an alternative or additional measure
-            # For example, restrict user from sending messages for a while
-            # This is a more nuanced approach than kick/ban for repeated minor flood
-            # For example, restrict for 5 minutes
-            # permissions = ChatPermissions(can_send_messages=False)
-            # try:
-            #     await self.context.bot.restrict_chat_member(
-            #         chat_id=group_id,
-            #         user_id=user_id,
-            #         permissions=permissions
-            #     )
-            #     logger.info(f"Temporarily restricted user {user_id} in group {group_id} due to flooding.")
-            #     # Optionally, schedule a job to lift the restriction later
-            #     # self.context.job_queue.run_once(callback_to_lift_restriction, 300, data={'chat_id': group_id, 'user_id': user_id})
-            # except Exception as e:
-            #     logger.error(f"Error restricting user {user_id}: {e}", exc_info=True)
+                    elif settings.kick_on_infraction and not action_taken: # Only kick if ban is not set or failed
+                        try:
+                            await self.context.bot.kick_chat_member(chat_id=group_id, user_id=user_id)
+                            # Telegram automatically unbans after a kick, so this is effectively a temporary removal.
+                            # If a longer "kick" (ban then unban later) is desired, job_queue is needed.
+                            action_log_message = f"Kicked user {user_id} from group {group_id} due to flooding."
+                            action_taken = True
+                        except Exception as e:
+                            logger.error(f"Error kicking user {user_id} for flooding: {e}", exc_info=True)
+                            await self.update.message.reply_text(BotMessages.BOT_NOT_ADMIN_ENOUGH_KICK)
+                    
+                    # If an action was taken, log it and reset infractions in DB
+                    if action_taken:
+                        logger.info(action_log_message)
+                        await crud.UserFloodRecordCRUD.reset_infractions(session, group_id, user_id)
+                        # Optionally, notify about the action taken
+                        await self.update.message.reply_text(f"{action_log_message.split(' from group')[0]}. تعداد تخلفات صفر شد.")
 
 
-            self.db_session.close()
-            return True # Flood detected and handled
+                # No need to close session explicitly, 'async with' handles it.
+                return True # Flood detected and handled
 
-        self.db_session.close()
-        return False # No flood detected
+            # No flood detected
+            return False
+        # Session is automatically closed outside the 'async with' block
 
     async def unban_user_after_timeout(self, context: ContextTypes.DEFAULT_TYPE):
-        """Callback to unban a user after a timeout (if kick was temporary)."""
-        job = context.job
-        if job and job.data:
-            chat_id = job.data.get("chat_id")
-            user_id = job.data.get("user_id")
+        """Callback to unban a user after a timeout (if kick was temporary). Currently not used by check_and_handle_flood directly."""
+        job = context.job # This is from PTB's JobQueue context
+        if job and job.data: # Ensure job and job.data exist
+            chat_id = job.data.get("chat_id") # type: ignore
+            user_id = job.data.get("user_id") # type: ignore
             if chat_id and user_id:
                 try:
-                    await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
-                    logger.info(f"Automatically unbanned user {user_id} in chat {chat_id} after timeout.")
+                    await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id) # type: ignore
+                    logger.info(f"Automatically unbanned user {user_id} in chat {chat_id} after timeout (via job queue).")
                 except Exception as e:
-                    logger.error(f"Error unbanning user {user_id} in chat {chat_id} after timeout: {e}", exc_info=True)
+                    logger.error(f"Error auto-unbanning user {user_id} in chat {chat_id}: {e}", exc_info=True)
 
-
-if __name__ == "__main__":
-    # This part is for testing or direct execution, which is complex for a service like this.
-    # It would require mock Update and Context objects.
-    from telegram_bot.core.logging_config import setup_logging
-    setup_logging() # Configure logging
-    logger.info("FloodControlService module loaded. Contains flood detection and handling logic.")
-    # Example of how it might be instantiated and used (conceptual):
-    # async def main_test():
-    #     mock_update = ... # Create a mock Update object
-    #     mock_context = ... # Create a mock Context object
-    #     flood_service = FloodControlService(mock_update, mock_context)
-    #     await flood_service.check_and_handle_flood()
-    #
-    # import asyncio
-    # asyncio.run(main_test())
-    pass
+# Note: The __main__ block is removed as direct execution of this service module is not typical.
+# Testing would be done via integration tests or by running the main bot.

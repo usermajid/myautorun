@@ -68,11 +68,12 @@ def register_handlers(application: Application) -> None:
     # Message Handlers
     # Handles new members and sends welcome message
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, MessageHandlers.handle_new_chat_members))
+    # Handles left members and sends farewell message
+    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, MessageHandlers.handle_left_chat_member))
     # Processes all other text messages in groups for filtering, flood control etc.
     # Ensure it's processed after commands and for non-admin users.
     # The logic to ignore admins is within process_all_group_messages itself.
     application.add_handler(MessageHandler(filters.TEXT & group_filter & (~filters.COMMAND), MessageHandlers.process_all_group_messages))
-
 
     # Chat Member Handler (tracks bot's own status in chats)
     application.add_handler(ChatMemberHandler(ChatMemberHandlers.track_bot_status_in_chats, ChatMemberHandler.MY_CHAT_MEMBER))

@@ -1,15 +1,12 @@
 import logging
-from telegram import Update, User
-from typing import Optional
+from telegram import Update, User # Ensure User is imported
+from typing import Optional # Ensure Optional is imported
+import html # Add this import
 
 logger = logging.getLogger(__name__)
 
-def get_user_mention(user: User) -> str:
-    """Returns a markdown mention for a user."""
-    if user.username:
-        return f"@{user.username}"
-    else:
-        return user.mention_markdown_v2()
+# Removed get_user_mention function
+# Removed is_user_admin function
 
 def get_group_id(update: Update) -> Optional[int]:
     """Extracts group ID from an update more reliably."""
@@ -18,38 +15,63 @@ def get_group_id(update: Update) -> Optional[int]:
     logger.warning("Could not extract group_id from update.")
     return None
 
-def is_user_admin(update: Update, user_id: int) -> bool:
-    """
-    Checks if a user is an administrator or owner of the chat.
-    This function requires `context.bot` to be available and might need to be
-    called from a handler where context is passed.
-    For simplicity in some services, we might pass the bot instance directly.
-    """
-    # This is a placeholder. A real implementation needs access to bot.get_chat_member or similar.
-    # This check often needs to be asynchronous.
-    # Consider using context.bot.get_chat_member(chat_id, user_id) in an async function.
-    # For now, this is a simplified synchronous version that might not always work or be accurate.
-    # It's better to use the one in permissions.py for actual permission checking.
-    if update.effective_chat and update.effective_chat.type in ["group", "supergroup"]:
-        # In a real scenario, you'd use:
-        # member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
-        # return member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]
-        # For this example, we'll assume a simplified check or that this helper
-        # is used in contexts where admin status is already known or less critical.
-        logger.warning("is_user_admin in helpers.py is a placeholder and should be used with caution.")
-        # This will likely not work as intended without `context.bot`.
-        # Returning False by default to be safe.
-        return False
-    return False
+class GeneralHelpers:
+    @staticmethod
+    def create_user_mention_html(user_id: int, user_obj: Optional[User] = None) -> str:
+        """Creates an HTML mention link for a user."""
+        # Ensure user_id is an int, as it might come from various sources
+        user_id = int(user_id)
+        
+        if user_obj and user_obj.username:
+            # Telegram automatically links @usernames in HTML parse mode
+            return f"@{html.escape(user_obj.username)}"
+        elif user_obj and user_obj.full_name:
+            # Escape full_name to prevent HTML injection if name contains HTML characters
+            return f"<a href='tg://user?id={user_id}'>{html.escape(user_obj.full_name)}</a>"
+        elif user_obj: # User object exists but no username and no full_name (rare)
+            return f"<a href='tg://user?id={user_id}'>User {user_id}</a>"
+        else: # No user object, just an ID
+            return f"User ID <code>{user_id}</code>" # Using <code> for ID-only makes it distinct
+
+    @staticmethod
+    def format_welcome_message(template: str, user_mention: str, chat_title: str) -> str:
+        """
+        Formats a welcome or farewell message template with provided placeholders.
+        Placeholders: {user_mention}, {user_name} (from user_mention if it's full name), {chat_title}
+        """
+        # Basic placeholder for user_name if user_mention is already a full name link
+        # A more robust solution might require passing user_name separately if user_mention is just @username
+        user_name_placeholder = user_mention # Default to mention if specific name not easily extracted
+        
+        # Attempt to extract name if user_mention is an HTML link (very basic parsing)
+        if user_mention.startswith("<a href="):
+            try:
+                # Extracts text between > and </a>
+                name_match = html.unescape(user_mention.split('>')[1].split('<')[0])
+                if name_match:
+                    user_name_placeholder = name_match
+            except IndexError:
+                pass # Keep default if parsing fails
+
+        return template.format(
+            user_mention=user_mention,
+            user_name=user_name_placeholder, # Use the extracted or default name
+            chat_title=chat_title
+        )
 
 
 if __name__ == "__main__":
-    # This part is for testing or direct execution, which is unlikely for helpers.
-    logger.info("Helpers module loaded. Contains utility functions.")
+    logger.info("Helpers module loaded. Contains utility functions in GeneralHelpers class.")
     # Example (conceptual, as User object needs to be created appropriately):
-    # from telegram import User
     # test_user_with_username = User(id=1, first_name="Test", is_bot=False, username="testuser")
-    # test_user_without_username = User(id=2, first_name="Test NoUser", is_bot=False)
-    # logger.info(f"Mention for user with username: {get_user_mention(test_user_with_username)}")
-    # logger.info(f"Mention for user without username: {get_user_mention(test_user_without_username)}")
+    # test_user_without_username = User(id=2, first_name="Test NoUser", is_bot=False, last_name="Example")
+    # test_user_id_only = 3
+
+    # print(f"Mention for user with username: {GeneralHelpers.create_user_mention_html(test_user_with_username.id, test_user_with_username)}")
+    # print(f"Mention for user without username: {GeneralHelpers.create_user_mention_html(test_user_without_username.id, test_user_without_username)}")
+    # print(f"Mention for user ID only: {GeneralHelpers.create_user_mention_html(test_user_id_only)}")
+
+    # template = "Hello {user_mention} ({user_name}), welcome to {chat_title}!"
+    # mention = GeneralHelpers.create_user_mention_html(test_user_without_username.id, test_user_without_username)
+    # print(GeneralHelpers.format_welcome_message(template, mention, "Awesome Group"))
     pass
