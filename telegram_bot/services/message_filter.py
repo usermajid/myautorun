@@ -1,13 +1,16 @@
 import logging
 from typing import Optional, List
+import logging # Ensure logging is imported if not already
+from typing import Optional, List # Ensure these are imported if not already
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram_bot.database.engine import AsyncSessionFactory # Import AsyncSessionFactory
-from telegram_bot.database import crud # Ensure crud refers to async version
+from telegram_bot.database.engine import AsyncSessionFactory
+from telegram_bot.database import crud
 from telegram_bot.database.models import GroupSetting
-from telegram_bot.services.permissions import PermissionService # Use PermissionService for consistency
-from telegram_bot.utils.helpers import GeneralHelpers # For user mentions
-from telegram_bot.core.constants import BotMessages # For standard bot messages
+# Corrected import for is_user_admin_or_owner and kept PermissionService for other uses like can_bot_delete_messages
+from telegram_bot.services.permissions import is_user_admin_or_owner, PermissionService 
+from telegram_bot.utils.helpers import GeneralHelpers
+from telegram_bot.core.constants import BotMessages
 import re # Add this import
 import logging
 
@@ -43,7 +46,8 @@ class MessageFilterService:
         user_id = user.id if user else None
 
         # Admins are typically exempt from message filtering
-        if user_id and await PermissionService.is_user_admin_or_owner(self.update, self.context):
+        # Corrected call to is_user_admin_or_owner
+        if user_id and await is_user_admin_or_owner(self.update, self.context): 
             logger.debug(f"User {user_id} is admin in group {group_id}, skipping message filtering.")
             return False
 
@@ -124,19 +128,4 @@ class MessageFilterService:
 
 # Note: The __main__ block is removed as direct execution of this service module is not typical.
 # Testing would be done via integration tests or by running the main bot.
-        try:
-            await self.update.message.delete()
-            logger.debug(f"Message {self.update.message.message_id} deleted.")
-            if self.update.message.from_user: # Only send warning if user is identifiable
-                 user_mention = self.update.message.from_user.mention_markdown_v2()
-                 full_warning = f"{user_mention}, {warning_text}"
-                 # Consider sending warning as a temporary message or in a less intrusive way
-                 # For example, send it and schedule its deletion after a few seconds.
-                 await self.context.bot.send_message(
-                     chat_id=self.update.effective_chat.id,
-                     text=full_warning,
-                     parse_mode='MarkdownV2'
-                 )
-                 logger.info(f"Sent warning to user {self.update.message.from_user.id}: {warning_text}")
-
-
+# The duplicate try/except block that was here has been removed.
