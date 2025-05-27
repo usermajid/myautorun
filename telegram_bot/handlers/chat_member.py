@@ -1,3 +1,9 @@
+"""
+کنترل‌کننده (handler) مربوط به تغییرات وضعیت عضویت ربات در چت‌ها.
+
+این ماژول مسئول رسیدگی به رویداد `my_chat_member` است که نشان‌دهنده
+تغییر وضعیت ربات (مانند اضافه شدن به گروه، حذف شدن، ارتقا به ادمین و غیره) می‌باشد.
+"""
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatMemberStatus
@@ -10,8 +16,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ChatMemberHandlers:
+    """مجموعه‌ای از متدهای استاتیک برای مدیریت رویدادهای مربوط به تغییر وضعیت عضویت ربات."""
     @staticmethod
     async def track_bot_status_in_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        ردیابی و مدیریت تغییرات وضعیت عضویت ربات در یک چت.
+
+        این تابع بر اساس وضعیت جدید ربات (عضو، ادمین، خارج شده، کیک شده)
+        اقدامات لازم مانند پاک کردن کش دسترسی‌ها، اطمینان از وجود تنظیمات گروه،
+        یا ارسال پیام‌های اطلاع‌رسانی را انجام می‌دهد.
+        """
         if not update.my_chat_member:
             return
 

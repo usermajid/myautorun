@@ -1,17 +1,41 @@
+"""
+عملیات CRUD (Create, Read, Update, Delete) برای مدل‌های پایگاه داده.
+
+این ماژول کلاس‌هایی را ارائه می‌دهد که هر کدام شامل مجموعه‌ای از متدهای استاتیک
+برای تعامل با جداول مربوطه در پایگاه داده (مانند group_settings, forbidden_words,
+user_flood_records) به صورت آسنکرون هستند.
+"""
 import logging
+from datetime import datetime, timedelta # Added
+from sqlalchemy import delete # Added
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select # For SQLAlchemy 2.0 style select
+from sqlalchemy.future import select 
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Optional, TypeVar, Type
-from telegram_bot.database import models # Assuming models.py defines GroupSetting, ForbiddenWord, UserFloodRecord
-from telegram_bot.database.models import GroupSetting, ForbiddenWord, UserFloodRecord # Explicit imports
+from telegram_bot.database import models 
+from telegram_bot.database.models import GroupSetting, ForbiddenWord, UserFloodRecord 
 
 logger = logging.getLogger(__name__)
 
 class GroupSettingCRUD:
+    """ارائه متدهای CRUD برای مدیریت تنظیمات گروه (GroupSetting)."""
     @staticmethod
     async def get_or_create(session: AsyncSession, group_id: int, chat_title: Optional[str] = None) -> Optional[models.GroupSetting]:
-        """Fetches a group setting or creates it if it doesn't exist (async)."""
+        """
+        تنظیمات یک گروه را بازیابی می‌کند یا در صورت عدم وجود، ایجاد می‌کند.
+
+        اگر تنظیمات برای گروه وجود نداشته باشد، یک رکورد جدید با مقادیر پیش‌فرض
+        و عنوان گروه (در صورت ارائه) ایجاد می‌شود. اگر عنوان گروه تغییر کرده باشد،
+        عنوان موجود در پایگاه داده به‌روزرسانی می‌شود.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+            chat_title: عنوان فعلی گروه تلگرامی (اختیاری).
+
+        Returns:
+            شیء GroupSetting در صورت موفقیت، در غیر این صورت None.
+        """
         try:
             stmt = select(models.GroupSetting).where(models.GroupSetting.group_id == group_id)
             result = await session.execute(stmt)
@@ -41,7 +65,17 @@ class GroupSettingCRUD:
 
     @staticmethod
     async def update(session: AsyncSession, group_id: int, **kwargs) -> Optional[models.GroupSetting]:
-        """Updates specific fields of a group setting (async)."""
+        """
+        فیلدهای مشخصی از تنظیمات یک گروه را به‌روزرسانی می‌کند.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+            **kwargs: جفت‌های کلید-مقدار برای فیلدهایی که باید به‌روزرسانی شوند.
+
+        Returns:
+            شیء GroupSetting به‌روزرسانی شده در صورت موفقیت، در غیر این صورت None.
+        """
         try:
             stmt = select(models.GroupSetting).where(models.GroupSetting.group_id == group_id)
             result = await session.execute(stmt)
@@ -69,9 +103,23 @@ class GroupSettingCRUD:
             return None
 
 class ForbiddenWordCRUD:
+    """ارائه متدهای CRUD برای مدیریت کلمات ممنوعه (ForbiddenWord)."""
     @staticmethod
     async def create(session: AsyncSession, group_id: int, word: str) -> Optional[models.ForbiddenWord]:
-        """Adds a forbidden word for a specific group (async). Renamed from add_forbidden_word."""
+        """
+        یک کلمه ممنوعه جدید به گروه اضافه می‌کند.
+
+        کلمه ابتدا به حروف کوچک تبدیل شده و فاصله‌های اضافی آن حذف می‌شود.
+        اگر کلمه از قبل در لیست کلمات ممنوعه گروه وجود داشته باشد، رکورد موجود بازگردانده می‌شود.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+            word: کلمه‌ای که باید به لیست ممنوعه اضافه شود.
+
+        Returns:
+            شیء ForbiddenWord ایجاد یا بازیابی شده در صورت موفقیت، در غیر این صورت None.
+        """
         try:
             group_setting = await GroupSettingCRUD.get_or_create(session, group_id) # Use the class method
             if not group_setting or not group_setting.id:
@@ -111,7 +159,17 @@ class ForbiddenWordCRUD:
 
     @staticmethod
     async def delete(session: AsyncSession, group_id: int, word: str) -> bool:
-        """Removes a forbidden word for a specific group (async). Renamed from remove_forbidden_word."""
+        """
+        یک کلمه ممنوعه را از لیست کلمات ممنوعه گروه حذف می‌کند.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+            word: کلمه‌ای که باید از لیست ممنوعه حذف شود.
+
+        Returns:
+            True اگر کلمه با موفقیت حذف شد، False در غیر این صورت (مثلاً اگر کلمه یافت نشد).
+        """
         try:
             group_setting = await GroupSettingCRUD.get_or_create(session, group_id) # Use the class method
             if not group_setting or not group_setting.id:
@@ -144,7 +202,16 @@ class ForbiddenWordCRUD:
 
     @staticmethod
     async def get_all_words_for_group(session: AsyncSession, group_id: int) -> List[str]:
-        """Retrieves all forbidden words for a specific group (async). Renamed from get_forbidden_words."""
+        """
+        لیست تمامی کلمات ممنوعه برای یک گروه خاص را بازیابی می‌کند.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+
+        Returns:
+            لیستی از رشته‌ها که هر کدام یک کلمه ممنوعه است. در صورت خطا یا عدم وجود، لیست خالی بازمی‌گرداند.
+        """
         try:
             group_setting = await GroupSettingCRUD.get_or_create(session, group_id) # Use the class method
             if not group_setting or not group_setting.id:
@@ -164,9 +231,22 @@ class ForbiddenWordCRUD:
             return []
 
 class UserFloodRecordCRUD:
+    """ارائه متدهای CRUD برای مدیریت سوابق کاربران برای کنترل سیلاب (UserFloodRecord)."""
     @staticmethod
     async def get_or_create(session: AsyncSession, group_id: int, user_id: int) -> Optional[models.UserFloodRecord]:
-        """Fetches or creates a flood record for a user in a group (async)."""
+        """
+        سابقه کنترل سیلاب یک کاربر در یک گروه را بازیابی می‌کند یا در صورت عدم وجود، ایجاد می‌کند.
+
+        اگر سابقه برای ترکیب کاربر و گروه وجود نداشته باشد، یک رکورد جدید با تعداد تخلف صفر ایجاد می‌شود.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+            user_id: شناسه کاربر تلگرامی.
+
+        Returns:
+            شیء UserFloodRecord در صورت موفقیت، در غیر این صورت None.
+        """
         try:
             stmt = select(models.UserFloodRecord).where(
                 models.UserFloodRecord.group_id == group_id,
@@ -192,21 +272,29 @@ class UserFloodRecordCRUD:
             return None
 
     @staticmethod
-    async def update(session: AsyncSession, group_id: int, user_id: int, update_timestamp: bool = False, increment_infraction: bool = False) -> Optional[models.UserFloodRecord]:
+    async def update(session: AsyncSession, group_id: int, user_id: int, update_last_infraction_timestamp: bool = False, increment_infraction: bool = False) -> Optional[models.UserFloodRecord]:
         """
-        Updates a user's flood record (async).
-        - `update_timestamp`: If True, updates `message_timestamps` to current time.
-        - `increment_infraction`: If True, increments `infraction_count`.
+        سابقه کنترل سیلاب یک کاربر را به‌روزرسانی می‌کند.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+            user_id: شناسه کاربر تلگرامی.
+            update_last_infraction_timestamp: اگر True باشد، زمان آخرین تخلف به زمان فعلی به‌روز می‌شود.
+            increment_infraction: اگر True باشد، تعداد تخلفات یک واحد افزایش می‌یابد.
+
+        Returns:
+            شیء UserFloodRecord به‌روزرسانی شده در صورت موفقیت، در غیر این صورت None.
         """
         try:
             record = await UserFloodRecordCRUD.get_or_create(session, group_id, user_id) # Use the class method
             if not record:
                 return None
 
-            if update_timestamp:
+            if update_last_infraction_timestamp:
                 from sqlalchemy.sql import func
-                record.message_timestamps = func.now()
-                logger.debug(f"Updated message timestamp for user {user_id} in group {group_id} (UserFloodRecordCRUD.update).")
+                record.last_infraction_timestamp = func.now()
+                logger.debug(f"Updated last infraction timestamp for user {user_id} in group {group_id} (UserFloodRecordCRUD.update).")
 
             if increment_infraction:
                 record.infraction_count = (record.infraction_count or 0) + 1
@@ -226,7 +314,17 @@ class UserFloodRecordCRUD:
 
     @staticmethod
     async def reset_infractions(session: AsyncSession, group_id: int, user_id: int) -> Optional[models.UserFloodRecord]:
-        """Resets a user's infraction count in a group (async). Renamed from reset_user_infraction_count."""
+        """
+        تعداد تخلفات یک کاربر در یک گروه را صفر می‌کند.
+
+        Args:
+            session: نشست پایگاه داده آسنکرون.
+            group_id: شناسه گروه تلگرامی.
+            user_id: شناسه کاربر تلگرامی.
+
+        Returns:
+            شیء UserFloodRecord با تعداد تخلفات صفر شده در صورت موفقیت، در غیر این صورت None.
+        """
         try:
             record = await UserFloodRecordCRUD.get_or_create(session, group_id, user_id) # Use the class method
             if record:
@@ -242,4 +340,39 @@ class UserFloodRecordCRUD:
         except Exception as e:
             await session.rollback()
             logger.error(f"Unexpected error resetting infractions for user {user_id}, group {group_id} in UserFloodRecordCRUD.reset_infractions: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    async def clear_old_records(session: AsyncSession, older_than_seconds: int) -> Optional[int]:
+        """
+        Deletes flood records older than a specified time threshold.
+
+        Args:
+            session: The asynchronous database session.
+            older_than_seconds: The threshold in seconds. Records with a 
+                                `last_infraction_timestamp` older than this will be deleted.
+
+        Returns:
+            The number of records deleted, or None if an error occurred.
+        """
+        try:
+            threshold_datetime = datetime.utcnow() - timedelta(seconds=older_than_seconds)
+            
+            stmt = delete(models.UserFloodRecord).where(
+                models.UserFloodRecord.last_infraction_timestamp < threshold_datetime
+            )
+            
+            result = await session.execute(stmt)
+            await session.commit()
+            
+            deleted_count = result.rowcount
+            logger.info(f"Successfully deleted {deleted_count} old flood records (older than {older_than_seconds} seconds).")
+            return deleted_count
+        except SQLAlchemyError as e:
+            await session.rollback()
+            logger.error(f"Database error while clearing old flood records: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Unexpected error while clearing old flood records: {e}", exc_info=True)
             return None

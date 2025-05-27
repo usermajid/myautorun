@@ -1,28 +1,66 @@
+"""
+سرویس کنترل و مدیریت سیلاب پیام (Anti-flood).
+
+این سرویس مسئول شناسایی کاربرانی است که در یک بازه زمانی مشخص، تعداد زیادی پیام ارسال می‌کنند
+و اعمال محدودیت‌های لازم (مانند هشدار، اخراج یا مسدود کردن) بر اساس تنظیمات گروه.
+از Redis برای ذخیره و شمارش مهرهای زمانی پیام‌ها به صورت مقیاس‌پذیر استفاده می‌کند.
+"""
 import logging
 import time
-from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Optional
 
-from telegram import Update, ChatPermissions # Keep ChatPermissions for potential future use with restrict_chat_member
+import redis.asyncio as redis # Added
+from telegram import Update, ChatPermissions
 from telegram.ext import ContextTypes
-from telegram_bot.database.engine import AsyncSessionFactory # Import AsyncSessionFactory
-from telegram_bot.database import crud # Ensure this refers to the async CRUD module
-from telegram_bot.database.models import GroupSetting, UserFloodRecord # Assuming these are still relevant
-from telegram_bot.utils.helpers import GeneralHelpers # For user mentions, if needed
-from telegram_bot.core.constants import BotConstants, BotMessages # For default messages/settings
+
+from telegram_bot.config import settings as app_settings # Added
+from telegram_bot.core.constants import BotConstants, BotMessages
+from telegram_bot.database import crud
+from telegram_bot.database.engine import AsyncSessionFactory
+from telegram_bot.database.models import GroupSetting, UserFloodRecord
+from telegram_bot.utils.helpers import GeneralHelpers
 
 logger = logging.getLogger(__name__)
 
-# NB: USER_MESSAGE_TIMESTAMPS is an in-memory store and will not scale across multiple instances
-# or persist across restarts. UserFloodRecord.message_timestamps in the DB is not currently used for this time-window check.
-# For a scalable solution, a distributed cache like Redis would be more appropriate for tracking message rates.
-USER_MESSAGE_TIMESTAMPS: Dict[int, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
+# USER_MESSAGE_TIMESTAMPS removed
 
 class FloodControlService:
+    """
+    منطق مربوط به کنترل سیلاب پیام‌ها را در یک گروه خاص مدیریت می‌کند.
+
+    این کلاس با دریافت آپدیت و کانتکست تلگرام مقداردهی اولیه شده و
+    متد `check_and_handle_flood` آن وظیفه اصلی بررسی و اقدام در صورت
+    تشخیص سیلاب را بر عهده دارد.
+    """
     def __init__(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        مقداردهی اولیه سرویس کنترل سیلاب.
+
+        Args:
+            update: آپدیت دریافتی از تلگرام.
+            context: کانتکست ربات تلگرام.
+        """
         self.update = update
         self.context = context
-        # self.db_session removed
+        self.redis_client: Optional[redis.Redis] = None
+        if app_settings.REDIS_HOST:
+            try:
+                self.redis_client = redis.Redis(
+                    host=app_settings.REDIS_HOST,
+                    port=app_settings.REDIS_PORT,
+                    db=app_settings.REDIS_DB,
+                    password=app_settings.REDIS_PASSWORD,
+                    decode_responses=True, # Convenient for keys and members
+                    socket_timeout=5, # Added timeout
+                    socket_connect_timeout=5 # Added timeout
+                )
+                logger.info("Redis client initialized for FloodControlService.")
+            except Exception as e:
+                logger.error(f"Failed to initialize Redis client for FloodControlService: {e}", exc_info=True)
+                self.redis_client = None # Ensure it's None on failure
+        else:
+            logger.warning("REDIS_HOST not configured. Redis-based flood control will be inactive.")
+
 
     async def check_and_handle_flood(self) -> bool:
         """Checks for flooding and takes action if necessary. Returns True if flood was detected and handled."""
@@ -32,49 +70,71 @@ class FloodControlService:
 
         group_id = self.update.effective_chat.id
         user_id = self.update.message.from_user.id
-        current_time = time.time()
-
-        async with AsyncSessionFactory() as session: # Acquire async session
-            settings: Optional[GroupSetting] = await crud.GroupSettingCRUD.get_or_create(session, group_id, self.update.effective_chat.title)
-            if not settings or not settings.anti_flood_active: # Use corrected field name
+        
+        async with AsyncSessionFactory() as session: # Acquire async session for DB operations
+            group_settings: Optional[GroupSetting] = await crud.GroupSettingCRUD.get_or_create(session, group_id, self.update.effective_chat.title)
+            if not group_settings or not group_settings.anti_flood_active:
                 logger.debug(f"Flood control disabled or no settings for group {group_id}.")
                 return False
 
-            # In-memory message rate tracking (remains for now as per instructions)
-            timestamps = USER_MESSAGE_TIMESTAMPS[group_id][user_id]
-            # Use BotConstants for flood window or make it configurable in GroupSetting
-            flood_window_seconds = BotConstants.FLOOD_TIME_WINDOW_SECONDS 
-            valid_timestamps = [t for t in timestamps if current_time - t < flood_window_seconds]
-            USER_MESSAGE_TIMESTAMPS[group_id][user_id] = valid_timestamps
-            valid_timestamps.append(current_time)
+            if not self.redis_client:
+                logger.warning(f"Redis client not available. Skipping Redis-based flood check for group {group_id}.")
+                # Fallback to no flood detection or potentially old mechanism if desired, but task asks for Redis replacement.
+                return False
 
-            logger.debug(f"User {user_id} in group {group_id} has {len(valid_timestamps)} messages in the last {flood_window_seconds}s. Max allowed: {settings.max_messages_per_minute}")
+            current_time = time.time()
+            redis_key = f"flood_control:{group_id}:{user_id}"
+            flood_window_seconds = BotConstants.FLOOD_TIME_WINDOW_SECONDS # Or from group_settings if configurable
 
-            if len(valid_timestamps) > settings.max_messages_per_minute:
-                logger.info(f"Flood detected for user {user_id} in group {group_id}.")
+            message_count = 0
+            try:
+                async with self.redis_client.pipeline() as pipe:
+                    # Add current message timestamp. Member is string to ensure uniqueness if time.time() returns same float.
+                    # Score is the float timestamp for range queries.
+                    await pipe.zadd(redis_key, {str(current_time): current_time})
+                    # Remove timestamps older than the flood window
+                    await pipe.zremrangebyscore(redis_key, '-inf', current_time - flood_window_seconds)
+                    # Count messages in the current window
+                    await pipe.zcard(redis_key)
+                    # Set/update expiry for the key to clean up inactive records
+                    await pipe.expire(redis_key, flood_window_seconds + 60) # e.g., window + 1 minute buffer
+                    
+                    results = await pipe.execute()
+                    message_count = results[2] # zcard result
                 
-                # Update user's flood record in the database, including timestamp of this flood detection
+                logger.debug(f"User {user_id} in group {group_id} has {message_count} messages in the last {flood_window_seconds}s (Redis). Max allowed: {group_settings.max_messages_per_minute}")
+
+            except redis.RedisError as e:
+                logger.error(f"Redis error during flood check for user {user_id} in group {group_id}: {e}", exc_info=True)
+                # If Redis fails, we might choose to not enforce flood control or have a fallback.
+                # For now, we'll log and not detect flood to prevent false positives if Redis is down.
+                return False
+
+
+            if message_count > group_settings.max_messages_per_minute:
+                logger.info(f"Flood detected for user {user_id} in group {group_id} via Redis ({message_count} > {group_settings.max_messages_per_minute}).")
+                
                 user_flood_record: Optional[UserFloodRecord] = await crud.UserFloodRecordCRUD.update(
-                    session, group_id, user_id, update_timestamp=True, increment_infraction=True
+                    session, group_id, user_id, update_last_infraction_timestamp=True, increment_infraction=True
                 )
 
                 warn_message = BotMessages.FLOOD_WARNING_MESSAGE.format(
                     user_mention=GeneralHelpers.create_user_mention_html(user_id, self.update.message.from_user)
                 )
 
-                if user_flood_record and settings.warn_on_infraction:
+                if user_flood_record and group_settings.warn_on_infraction:
                     try:
                         await self.update.message.reply_html(warn_message)
                     except Exception as e:
                         logger.error(f"Error sending flood warning message: {e}", exc_info=True)
 
-                if user_flood_record and user_flood_record.infraction_count >= settings.infraction_count_for_action:
+                if user_flood_record and user_flood_record.infraction_count >= group_settings.infraction_count_for_action:
                     action_taken = False
                     action_log_message = ""
 
                     # Determine action based on settings (ban highest priority, then kick)
                     # This logic can be expanded (e.g., temporary mute first)
-                    if settings.ban_on_infraction:
+                    if group_settings.ban_on_infraction:
                         try:
                             await self.context.bot.ban_chat_member(chat_id=group_id, user_id=user_id)
                             action_log_message = f"Banned user {user_id} from group {group_id} due to flooding."
@@ -84,7 +144,7 @@ class FloodControlService:
                             await self.update.message.reply_text(BotMessages.BOT_NOT_ADMIN_ENOUGH_BAN)
 
 
-                    elif settings.kick_on_infraction and not action_taken: # Only kick if ban is not set or failed
+                    elif group_settings.kick_on_infraction and not action_taken: # Only kick if ban is not set or failed
                         try:
                             await self.context.bot.kick_chat_member(chat_id=group_id, user_id=user_id)
                             # Telegram automatically unbans after a kick, so this is effectively a temporary removal.

@@ -1,3 +1,11 @@
+"""
+کنترل‌کننده‌های (handlers) مربوط به پیام‌های مختلف در ربات تلگرام.
+
+این ماژول شامل کنترل‌کننده‌هایی برای رویدادهای زیر است:
+- پیوستن اعضای جدید به گروه (`handle_new_chat_members`).
+- پردازش تمام پیام‌های متنی ارسال شده در گروه‌ها (برای فیلترینگ و کنترل سیلاب) (`process_all_group_messages`).
+- خروج اعضا از گروه (`handle_left_chat_member`).
+"""
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram_bot.database.engine import AsyncSessionFactory
@@ -13,8 +21,15 @@ import html
 logger = logging.getLogger(__name__)
 
 class MessageHandlers:
+    """مجموعه‌ای از متدهای استاتیک برای مدیریت رویدادهای مربوط به پیام‌ها."""
     @staticmethod
     async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        مدیریت رویداد پیوستن یک یا چند عضو جدید به گروه.
+
+        - اگر ربات به گروه اضافه شود، پیام راهنما برای ادمین کردن ارسال می‌کند.
+        - برای سایر اعضای جدید، پیام خوشامدگویی (بر اساس تنظیمات گروه) ارسال می‌کند.
+        """
         if not update.message or not update.message.new_chat_members or not update.effective_chat:
             return
 
@@ -60,6 +75,13 @@ class MessageHandlers:
 
     @staticmethod
     async def process_all_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        پردازش تمام پیام‌های متنی ارسال شده در گروه‌ها (به جز پیام‌های ادمین‌ها).
+
+        این تابع به ترتیب موارد زیر را انجام می‌دهد:
+        1. بررسی و اعمال قوانین ضد سیلاب (Anti-flood).
+        2. در صورت عدم تشخیص سیلاب، اعمال فیلترهای محتوا (لینک، فروارد، کلمات ممنوعه).
+        """
         if not update.message or not update.effective_chat or update.effective_chat.type not in ["group", "supergroup"]:
             return
         if not update.effective_user: # Should not happen for messages, but good check
@@ -77,25 +99,18 @@ class MessageHandlers:
         filter_service = MessageFilterService(update, context)
         await filter_service.init_permissions() # Check bot's permission to delete
 
-        async with AsyncSessionFactory() as session:
-            group_settings = await GroupSettingCRUD.get_or_create(session, update.effective_chat.id, update.effective_chat.title)
-
-            # Check for forbidden words
-            if group_settings.filter_links_active or group_settings.filter_forwards_active or group_settings.forbidden_words: # Optimization: only fetch words if any filter is active
-                forbidden_words_list = await ForbiddenWordCRUD.get_all(session, update.effective_chat.id)
-                if await filter_service.filter_forbidden_words(group_settings, forbidden_words_list):
-                    return # Message deleted
-
-            # Check for links
-            if await filter_service.filter_links(group_settings):
-                return # Message deleted
-
-            # Check for forwards
-            if await filter_service.filter_forwards(group_settings):
-                return # Message deleted
+        # filter_message() will internally fetch group_settings and forbidden_words if needed.
+        if await filter_service.filter_message():
+            return  # Message was filtered (e.g., deleted)
 
     @staticmethod
     async def handle_left_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        مدیریت رویداد خروج یک عضو از گروه.
+
+        در صورت فعال بودن در تنظیمات گروه، پیام بدرقه برای عضو خارج شده ارسال می‌کند.
+        برای ربات‌ها پیام بدرقه ارسال نمی‌شود.
+        """
         if not update.message or not update.message.left_chat_member or not update.effective_chat:
             logger.debug("Left member handler: No left member or effective_chat.")
             return

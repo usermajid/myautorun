@@ -1,12 +1,32 @@
+"""
+ماژول تنظیمات و راه‌اندازی اولیه ربات تلگرام.
+
+این ماژول شامل توابعی برای انجام عملیات پس از ایجاد شیء `Application`
+(مانند تنظیم دستورات ربات) و همچنین ثبت تمامی handler های برنامه
+(شامل دستورات، پیام‌ها، وضعیت اعضا و خطاها) می‌باشد.
+"""
 from telegram import BotCommand, MenuButtonCommands
 from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, filters, PicklePersistence
 
 # Import handler classes
 from telegram_bot.handlers.general import GeneralHandlers
-from telegram_bot.handlers.admin import AdminHandlers
+from telegram_bot.handlers.admin import (
+    AdminHandlers, 
+    AdminConversationState,
+    settings_callback_handler, 
+    received_welcome_message,
+    received_farewell_message, 
+    received_rules_text, 
+    received_max_messages,
+    cancel_settings_conversation, 
+    forbidden_words_menu_callback,
+    received_forbidden_word_to_add, 
+    received_forbidden_word_to_remove
+)
 from telegram_bot.handlers.message import MessageHandlers
 from telegram_bot.handlers.chat_member import ChatMemberHandlers
 from telegram_bot.handlers.error import global_error_handler # Direct import of the function
+from telegram.ext import ConversationHandler, CallbackQueryHandler # Added for ConversationHandler
 
 # Import settings if needed for persistence or other setup
 from telegram_bot.config import settings
@@ -15,6 +35,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def post_bot_initialization(application: Application) -> None:
+    """
+    انجام تنظیمات پس از مقداردهی اولیه شیء Application ربات.
+
+    این تابع موارد زیر را انجام می‌دهد:
+    - تعریف لیست دستورات ربات (BotCommand) که در منوی تلگرام نمایش داده می‌شوند.
+    - ارسال این دستورات به سرور تلگرام با استفاده از `application.bot.set_my_commands`.
+    - تنظیم دکمه منوی پیش‌فرض ربات در چت‌ها.
+
+    Args:
+        application: شیء Application ربات.
+    """
     bot_commands = [
         BotCommand("start", "شروع کار با ربات (فقط در چت خصوصی)"),
         BotCommand("help", "نمایش راهنما و لیست کامل دستورات"),
@@ -42,6 +73,19 @@ async def post_bot_initialization(application: Application) -> None:
 
 
 def register_handlers(application: Application) -> None:
+    """
+    ثبت تمامی handler های ربات به شیء Application.
+
+    این تابع handler های زیر را ثبت می‌کند:
+    - کنترل‌کننده خطای عمومی (global_error_handler).
+    - Handler های عمومی (مانند /start, /help, /rules).
+    - Handler های دستورات ادمین (مانند /setrules, /kick, /ban, و دستورات مربوط به فیلترها).
+    - Handler های پیام (مانند خوشامدگویی به اعضای جدید، بدرقه اعضای خارج شده، پردازش پیام‌های گروهی برای فیلترینگ و ضد سیلاب).
+    - Handler مربوط به تغییرات وضعیت عضویت خود ربات در گروه‌ها.
+
+    Args:
+        application: شیء Application ربات.
+    """
     application.add_error_handler(global_error_handler)
 
     # General Handlers
@@ -77,5 +121,44 @@ def register_handlers(application: Application) -> None:
 
     # Chat Member Handler (tracks bot's own status in chats)
     application.add_handler(ChatMemberHandler(ChatMemberHandlers.track_bot_status_in_chats, ChatMemberHandler.MY_CHAT_MEMBER))
+
+    # Settings Conversation Handler
+    settings_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("settings", AdminHandlers.settings_command, filters=filters.ChatType.GROUPS)],
+        states={
+            AdminConversationState.SELECTING_SETTING: [
+                CallbackQueryHandler(settings_callback_handler, pattern='^settings_')
+            ],
+            AdminConversationState.EDITING_WELCOME_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, received_welcome_message)
+            ],
+            AdminConversationState.EDITING_FAREWELL_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, received_farewell_message)
+            ],
+            AdminConversationState.EDITING_RULES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, received_rules_text)
+            ],
+            AdminConversationState.SETTING_MAX_MESSAGES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, received_max_messages)
+            ],
+            AdminConversationState.SELECTING_ACTION: [ # State for forbidden words menu
+                CallbackQueryHandler(forbidden_words_menu_callback, pattern='^fw_')
+            ],
+            AdminConversationState.ADDING_FORBIDDEN_WORD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, received_forbidden_word_to_add)
+            ],
+            AdminConversationState.REMOVING_FORBIDDEN_WORD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, received_forbidden_word_to_remove)
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_settings_conversation),
+            CallbackQueryHandler(cancel_settings_conversation, pattern='^settings_close_')
+        ],
+        # per_user=True, per_chat=False # Default is per_user=True, per_chat=True
+        name="settings_conversation",
+        persistent=False 
+    )
+    application.add_handler(settings_conv_handler)
 
     logger.info("All handlers registered.")

@@ -1,5 +1,14 @@
+"""
+سرویس مدیریت دسترسی‌ها و مجوزها.
+
+این ماژول شامل توابع و یک کلاس سرویس برای بررسی وضعیت و مجوزهای کاربران و خود ربات
+در گروه‌ها می‌باشد. همچنین یک دکوراتور برای محدود کردن دسترسی به دستورات خاص
+به ادمین‌ها ارائه می‌دهد. از سیستم کش برای بهینه‌سازی درخواست‌های مربوط به
+مجوزهای ربات استفاده می‌کند.
+"""
 import logging
 from telegram import Update, ChatMember
+from telegram.constants import ChatMemberStatus # Added this import
 from telegram.ext import ContextTypes
 from typing import Optional, Dict, Any
 from telegram_bot.config import settings # Import settings
@@ -71,7 +80,13 @@ async def is_user_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_T
     return is_admin
 
 
-class PermissionService: # Class-based structure for better organization
+class PermissionService:
+    """
+    ارائه متدهایی برای بررسی و مدیریت مجوزهای خود ربات در گروه‌ها.
+
+    از کش برای ذخیره موقت مجوزهای ربات استفاده می‌کند تا تعداد درخواست‌ها
+    به API تلگرام کاهش یابد.
+    """
     @staticmethod
     async def get_bot_permissions(chat_id: int, context: ContextTypes.DEFAULT_TYPE, force_refresh: bool = False) -> Optional[ChatMember]:
         """Gets the bot's own permissions in a chat, with caching."""

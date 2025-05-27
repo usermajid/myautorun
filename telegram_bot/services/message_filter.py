@@ -1,3 +1,12 @@
+"""
+سرویس فیلتر کردن محتوای پیام‌ها.
+
+این سرویس مسئول بررسی پیام‌های ورودی بر اساس تنظیمات گروه برای موارد زیر است:
+- لینک‌ها
+- پیام‌های فروارد شده
+- کلمات ممنوعه
+در صورت تطابق با فیلتر و داشتن دسترسی لازم، پیام را حذف کرده و به کاربر هشدار می‌دهد.
+"""
 import logging
 from typing import Optional, List
 import logging # Ensure logging is imported if not already
@@ -17,7 +26,20 @@ import logging
 logger = logging.getLogger(__name__)
 
 class MessageFilterService:
+    """
+    منطق مربوط به فیلتر کردن پیام‌ها (لینک، فروارد، کلمات ممنوعه) را مدیریت می‌کند.
+
+    پس از مقداردهی اولیه با آپدیت و کانتکست، متد `filter_message` آن مسئول
+    اعمال فیلترهای تعریف شده در تنظیمات گروه است.
+    """
     def __init__(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        مقداردهی اولیه سرویس فیلتر پیام.
+
+        Args:
+            update: آپدیت دریافتی از تلگرام.
+            context: کانتکست ربات تلگرام.
+        """
         self.update = update
         self.context = context
         self.bot_can_delete = False # Initialize permission state

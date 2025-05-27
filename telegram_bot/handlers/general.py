@@ -1,3 +1,9 @@
+"""
+کنترل‌کننده‌های (handlers) عمومی ربات تلگرام.
+
+این ماژول شامل کنترل‌کننده‌هایی برای دستورات عمومی مانند /start و /help
+می‌باشد که برای تمام کاربران قابل دسترس هستند.
+"""
 import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from telegram.ext import ContextTypes

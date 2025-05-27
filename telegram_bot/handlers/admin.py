@@ -1,4 +1,13 @@
+"""
+کنترل کننده های (handlers) دستورات مدیریتی ربات تلگرام.
+
+این ماژول شامل کلاس `AdminHandlers` برای دستورات ساده مدیریتی و همچنین
+منطق کامل `ConversationHandler` برای مدیریت دستور تعاملی /settings می باشد.
+تمام دستورات مدیریتی نیاز به سطح دسترسی ادمین دارند که توسط دکوراتور
+`@require_admin_privileges` بررسی می شود.
+"""
 import logging
+from enum import Enum, auto # Added
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram_bot.database import crud
@@ -14,12 +23,24 @@ logger = logging.getLogger(__name__)
 
 # Conversation states for /settings command - These might need to be class attributes or handled differently if settings becomes a class
 # For now, keeping them module-level as they are tied to ConversationHandler states
-(SELECTING_ACTION, SELECTING_SETTING, CHANGING_SETTING, ADDING_FORBIDDEN_WORD, REMOVING_FORBIDDEN_WORD, LISTING_FORBIDDEN_WORDS, TOGGLING_BOOLEAN, EDITING_WELCOME_MESSAGE, EDITING_FAREWELL_MESSAGE, EDITING_RULES, SETTING_MAX_MESSAGES) = range(11)
+# (SELECTING_ACTION, SELECTING_SETTING, CHANGING_SETTING, ADDING_FORBIDDEN_WORD, REMOVING_FORBIDDEN_WORD, LISTING_FORBIDDEN_WORDS, TOGGLING_BOOLEAN, EDITING_WELCOME_MESSAGE, EDITING_FAREWELL_MESSAGE, EDITING_RULES, SETTING_MAX_MESSAGES) = range(11)
 
+class AdminConversationState(Enum):
+    SELECTING_ACTION = auto()
+    SELECTING_SETTING = auto()
+    CHANGING_SETTING = auto() 
+    ADDING_FORBIDDEN_WORD = auto()
+    REMOVING_FORBIDDEN_WORD = auto()
+    LISTING_FORBIDDEN_WORDS = auto() 
+    TOGGLING_BOOLEAN = auto() 
+    EDITING_WELCOME_MESSAGE = auto()
+    EDITING_FAREWELL_MESSAGE = auto()
+    EDITING_RULES = auto()
+    SETTING_MAX_MESSAGES = auto()
 
 class AdminHandlers:
     """
-    Encapsulates all admin command handlers and related helper methods.
+    کلاس دربرگیرنده تمام کنترل کننده های دستورات ادمین و متدهای کمکی مربوطه.
     """
 
     # --- Helper Functions (now part of the class or refactored) ---
@@ -69,7 +90,7 @@ class AdminHandlers:
 
         keyboard = AdminHandlers.get_settings_keyboard(group_id, group_settings)
         await update.message.reply_text("⚙️ تنظیمات گروه ⚙️\n\nگزینه‌ای را برای مدیریت انتخاب کنید:", reply_markup=keyboard)
-        return SELECTING_SETTING
+        return AdminConversationState.SELECTING_SETTING
 
     @staticmethod
     @require_admin_privileges
@@ -242,7 +263,7 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
                 group_settings = await GroupSettingCRUD.get_or_create(session, group_id, update.effective_chat.title or "Unknown") # Re-fetch
                 keyboard = AdminHandlers.get_settings_keyboard(group_id, group_settings)
                 await query.edit_message_text("⚙️ تنظیمات گروه ⚙️", reply_markup=keyboard)
-                return SELECTING_SETTING
+                return AdminConversationState.SELECTING_SETTING
 
 
         elif main_action == "edit":
@@ -251,23 +272,23 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
             context.user_data['group_id_for_edit'] = group_id
             
             prompt_message = ""
-            next_state = -1
+            next_state: AdminConversationState = AdminConversationState.SELECTING_SETTING # Default
             if setting_to_edit == "welcome":
                 prompt_message = BotMessages.WELCOME_MESSAGE_PROMPT
-                next_state = EDITING_WELCOME_MESSAGE
+                next_state = AdminConversationState.EDITING_WELCOME_MESSAGE
             elif setting_to_edit == "farewell":
                 prompt_message = BotMessages.FAREWELL_MESSAGE_PROMPT
-                next_state = EDITING_FAREWELL_MESSAGE
+                next_state = AdminConversationState.EDITING_FAREWELL_MESSAGE
             elif setting_to_edit == "rules":
                 prompt_message = BotMessages.RULES_PROMPT
-                next_state = EDITING_RULES
+                next_state = AdminConversationState.EDITING_RULES
             else:
                 await query.edit_message_text("خطا: بخش ویرایش ناشناخته.")
                 # Refresh keyboard
                 group_settings = await GroupSettingCRUD.get_or_create(session, group_id, update.effective_chat.title or "Unknown") # Re-fetch
                 keyboard = AdminHandlers.get_settings_keyboard(group_id, group_settings)
                 await query.edit_message_text("⚙️ تنظیمات گروه ⚙️", reply_markup=keyboard)
-                return SELECTING_SETTING
+                return AdminConversationState.SELECTING_SETTING
 
             await query.edit_message_text(prompt_message)
             return next_state
@@ -275,22 +296,22 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
         elif main_action == "manage" and action_parts[2] == "forbidden_words":
             keyboard = AdminHandlers.get_forbidden_words_menu_keyboard(group_id)
             await query.edit_message_text("จัดการ کلمات ممنوعه:", reply_markup=keyboard)
-            return SELECTING_ACTION # State for FW management
+            return AdminConversationState.SELECTING_ACTION # State for FW management
 
         elif main_action == "set" and action_parts[2] == "max_messages": # settings_set_max_messages_GROUPID
             context.user_data['setting_to_edit'] = 'max_messages_per_minute'
             context.user_data['group_id_for_edit'] = group_id
             await query.edit_message_text(BotMessages.MAX_MESSAGES_PROMPT)
-            return SETTING_MAX_MESSAGES
+            return AdminConversationState.SETTING_MAX_MESSAGES
             
         # Refresh settings and keyboard after any action
         group_settings = await GroupSettingCRUD.get_or_create(session, group_id, update.effective_chat.title or "Unknown") # Re-fetch
         keyboard = AdminHandlers.get_settings_keyboard(group_id, group_settings)
         await query.edit_message_text("⚙️ تنظیمات گروه ⚙️", reply_markup=keyboard)
-        return SELECTING_SETTING
+        return AdminConversationState.SELECTING_SETTING
 
 
-async def received_new_setting_text_value(update: Update, context: ContextTypes.DEFAULT_TYPE, state_to_return_to: int) -> int:
+async def received_new_setting_text_value(update: Update, context: ContextTypes.DEFAULT_TYPE, state_to_return_to: AdminConversationState) -> AdminConversationState:
     if not update.message or not update.message.text or not context.user_data or not update.effective_user:
         await update.message.reply_text("پردازش تنظیمات جدید با مشکل مواجه شد. لطفاً مجدداً از /settings شروع کنید.")
         return ConversationHandler.END
@@ -335,7 +356,7 @@ async def received_new_setting_text_value(update: Update, context: ContextTypes.
             group_settings = await GroupSettingCRUD.get_or_create(session, group_id, update.effective_chat.title or "Unknown")
             keyboard = AdminHandlers.get_settings_keyboard(group_id, group_settings)
             await update.message.reply_text("⚙️ تنظیمات گروه ⚙️", reply_markup=keyboard)
-        return SELECTING_SETTING
+        return AdminConversationState.SELECTING_SETTING
 
 
     async with AsyncSessionFactory() as session:
@@ -357,17 +378,17 @@ async def received_new_setting_text_value(update: Update, context: ContextTypes.
         group_settings = await GroupSettingCRUD.get_or_create(session, group_id, update.effective_chat.title or "Unknown")
         keyboard = AdminHandlers.get_settings_keyboard(group_id, group_settings)
         await update.message.reply_text("⚙️ تنظیمات گروه ⚙️", reply_markup=keyboard)
-        return SELECTING_SETTING
+        return AdminConversationState.SELECTING_SETTING
 
 # Specific handlers for each text input state, calling the generic one
-async def received_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await received_new_setting_text_value(update, context, EDITING_WELCOME_MESSAGE)
-async def received_farewell_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await received_new_setting_text_value(update, context, EDITING_FAREWELL_MESSAGE)
-async def received_rules_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await received_new_setting_text_value(update, context, EDITING_RULES)
-async def received_max_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await received_new_setting_text_value(update, context, SETTING_MAX_MESSAGES)
+async def received_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> AdminConversationState:
+    return await received_new_setting_text_value(update, context, AdminConversationState.EDITING_WELCOME_MESSAGE)
+async def received_farewell_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> AdminConversationState:
+    return await received_new_setting_text_value(update, context, AdminConversationState.EDITING_FAREWELL_MESSAGE)
+async def received_rules_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> AdminConversationState:
+    return await received_new_setting_text_value(update, context, AdminConversationState.EDITING_RULES)
+async def received_max_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> AdminConversationState:
+    return await received_new_setting_text_value(update, context, AdminConversationState.SETTING_MAX_MESSAGES)
 
 
 async def cancel_settings_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -388,7 +409,7 @@ async def forbidden_words_menu_callback(update: Update, context: ContextTypes.DE
     query = update.callback_query
     await query.answer()
     if not query.data or not update.effective_chat or not update.effective_user:
-        return SELECTING_SETTING
+        return AdminConversationState.SELECTING_SETTING
 
     group_id = update.effective_chat.id
     action = query.data.split('_')[1] # fw_add, fw_remove, fw_list, fw_back
@@ -397,10 +418,10 @@ async def forbidden_words_menu_callback(update: Update, context: ContextTypes.DE
 
     if action == "add":
         await query.edit_message_text("لطفاً کلمه یا عبارت ممنوعه جدید را ارسال کنید.")
-        return ADDING_FORBIDDEN_WORD
+        return AdminConversationState.ADDING_FORBIDDEN_WORD
     elif action == "remove":
         await query.edit_message_text("لطفاً کلمه یا عبارتی که می‌خواهید از لیست ممنوعه حذف شود را ارسال کنید.")
-        return REMOVING_FORBIDDEN_WORD
+        return AdminConversationState.REMOVING_FORBIDDEN_WORD
     elif action == "list":
         async with AsyncSessionFactory() as session:
             words = await ForbiddenWordCRUD.get_all_words_for_group(session, group_id)
@@ -410,19 +431,19 @@ async def forbidden_words_menu_callback(update: Update, context: ContextTypes.DE
                 message_text = "کلمات ممنوعه فعلی:\n" + "\n".join(f"- `{word}`" for word in words)
             keyboard = AdminHandlers.get_forbidden_words_menu_keyboard(group_id) # Show menu again
             await query.edit_message_text(message_text, parse_mode='MarkdownV2', reply_markup=keyboard)
-        return SELECTING_ACTION # Stay in FW menu
+        return AdminConversationState.SELECTING_ACTION # Stay in FW menu
     elif action == "back":
         async with AsyncSessionFactory() as session:
             group_settings = await GroupSettingCRUD.get_or_create(session, group_id, update.effective_chat.title or "Unknown")
             keyboard = AdminHandlers.get_settings_keyboard(group_id, group_settings)
             await query.edit_message_text("⚙️ تنظیمات گروه ⚙️", reply_markup=keyboard)
-        return SELECTING_SETTING
+        return AdminConversationState.SELECTING_SETTING
     else:
         await query.edit_message_text("دستور نامعتبر.")
-        return SELECTING_ACTION
+        return AdminConversationState.SELECTING_ACTION
 
 
-async def received_forbidden_word_to_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def received_forbidden_word_to_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> AdminConversationState:
     if not update.message or not update.message.text or not context.user_data or not update.effective_user:
         await update.message.reply_text("پردازش با مشکل مواجه شد. لطفاً مجدداً از /settings شروع کنید.")
         return ConversationHandler.END
@@ -437,7 +458,7 @@ async def received_forbidden_word_to_add(update: Update, context: ContextTypes.D
     
     if not word_to_add:
         await update.message.reply_text("کلمه‌ای وارد نشده است. لطفاً کلمه را برای ممنوع کردن ارسال کنید.")
-        return ADDING_FORBIDDEN_WORD
+        return AdminConversationState.ADDING_FORBIDDEN_WORD
 
     async with AsyncSessionFactory() as session:
         added = await ForbiddenWordCRUD.create(session, group_id, word_to_add)
@@ -448,10 +469,10 @@ async def received_forbidden_word_to_add(update: Update, context: ContextTypes.D
         
         keyboard = AdminHandlers.get_forbidden_words_menu_keyboard(group_id)
         await update.message.reply_text("مدیریت کلمات ممنوعه:", reply_markup=keyboard)
-        return SELECTING_ACTION
+        return AdminConversationState.SELECTING_ACTION
 
 
-async def received_forbidden_word_to_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def received_forbidden_word_to_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> AdminConversationState:
     if not update.message or not update.message.text or not context.user_data or not update.effective_user:
         await update.message.reply_text("پردازش با مشکل مواجه شد. لطفاً مجدداً از /settings شروع کنید.")
         return ConversationHandler.END
@@ -466,7 +487,7 @@ async def received_forbidden_word_to_remove(update: Update, context: ContextType
 
     if not word_to_remove:
         await update.message.reply_text("کلمه‌ای وارد نشده است. لطفاً کلمه را برای حذف ارسال کنید.")
-        return REMOVING_FORBIDDEN_WORD
+        return AdminConversationState.REMOVING_FORBIDDEN_WORD
 
     async with AsyncSessionFactory() as session:
         deleted = await ForbiddenWordCRUD.delete(session, group_id, word_to_remove)
@@ -477,7 +498,7 @@ async def received_forbidden_word_to_remove(update: Update, context: ContextType
 
         keyboard = AdminHandlers.get_forbidden_words_menu_keyboard(group_id)
         await update.message.reply_text("مدیریت کلمات ممنوعه:", reply_markup=keyboard)
-        return SELECTING_ACTION
+        return AdminConversationState.SELECTING_ACTION
 
 
 if __name__ == "__main__":
